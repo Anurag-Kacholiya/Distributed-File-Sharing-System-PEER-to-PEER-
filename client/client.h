@@ -32,21 +32,20 @@ private:
     void handle_peer_connection(int peer_socket);
     void process_user_input();
     
-    // --- Failover and Connection Management ---
+    // connection failover management
     bool connect_to_available_tracker();
     bool try_connect_to(const string& addr);
     string send_to_tracker(const string& command, bool is_retry = false);
 
-    // --- Command Handlers ---
+    // command handlers
     void handle_upload(const vector<string>& args);
     void handle_download(const vector<string>& args);
     void show_downloads();
     void handle_login(const vector<string>& args);
     
-    // --- ADD THIS LINE ---
     void download_manager(const string& group_id, const string& filename, const string& dest_path, const vector<string>& metadata);
 
-    // --- State Variables ---
+    // tracker state variables
     vector<string> tracker_addresses;
     int current_tracker_idx = 0;
     int tracker_socket = -1;
@@ -55,7 +54,7 @@ private:
 
     bool is_logged_in = false;
     string user_id;
-    string password; // Store password for re-login on failover
+    string password;
 
     map<string, DownloadState> ongoing_downloads; // filename -> state
     mutex downloads_mutex;

@@ -1,7 +1,6 @@
 #include "client.h"
 #include "utils.h"
 #include <iostream>
-#include <fstream>
 #include <sstream>
 #include <cstring>
 #include <unistd.h>
@@ -11,67 +10,93 @@
 #include <random>
 #include <iomanip>
 #include <openssl/sha.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
-#define MSG_SIZE 512*1024
+#define size_piece 512*1024
 
-using namespace std;
-
-Client::Client(const string& tracker_info_file) {
-    ifstream file(tracker_info_file);
-    if (!file.is_open()) {
+Client::Client(const string& tracker_info_file) 
+{
+    int fd = open(tracker_info_file.c_str(), O_RDONLY);
+    if (fd < 0) 
+    {
         perror("Failed to open tracker_info.txt");
+        exit(0);
+    }
+
+    char buffer[256];
+    ssize_t bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+    close(fd);
+
+    if (bytes_read <= 0) 
+    {
+        log_msg("Failed to read from tracker_info.txt or file is empty.");
         exit(EXIT_FAILURE);
     }
+    buffer[bytes_read] = '\0'; // Null-terminate the buffer
+
+    stringstream ss(buffer);
     string line;
-    while(getline(file, line)) {
-        if(!line.empty()) {
+    while(getline(ss, line)) 
+    {
+        if(!line.empty()) 
+        {
             tracker_addresses.push_back(line);
         }
     }
-    if (tracker_addresses.size() < 2) {
+
+    if (tracker_addresses.size() < 2) 
+    {
         cerr << "FATAL: tracker_info.txt must contain at least two tracker addresses." << endl;
         exit(EXIT_FAILURE);
     }
 }
 
-void Client::run() {
+void Client::run() 
+{
     thread seeder_thread(&Client::start_seeder_service, this);
     seeder_thread.detach();
     
     this_thread::sleep_for(chrono::milliseconds(100));
 
-    if (!connect_to_available_tracker()) {
+    if (!connect_to_available_tracker()) 
+    {
         return;
     }
 
     process_user_input();
     
-    if (tracker_socket != -1) {
+    if (tracker_socket != -1) 
+    {
         close(tracker_socket);
     }
 }
 
-bool Client::try_connect_to(const string& addr) {
+bool Client::try_connect_to(const string& addr) 
+{
     size_t delim_pos = addr.find(':');
-    if (delim_pos == string::npos) return false;
+    if (delim_pos == string::npos) 
+        return false;
     string ip = addr.substr(0, delim_pos);
     int port = stoi(addr.substr(delim_pos + 1));
 
     tracker_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (tracker_socket < 0) return false;
+    if (tracker_socket < 0) 
+        return false;
 
     sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
     inet_pton(AF_INET, ip.c_str(), &server_addr.sin_addr);
 
-    if (connect(tracker_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (connect(tracker_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) 
+    {
         close(tracker_socket);
         tracker_socket = -1;
         return false;
     }
     
-    log_message("Successfully connected to tracker at " + addr);
+    log_msg("successfully connected to tracker at " + addr);
     return true;
 }
 
@@ -80,7 +105,7 @@ bool Client::connect_to_available_tracker() {
         return true;
     }
 
-    log_message("Could not connect to primary tracker. Failing over...");
+    log_msg("Could not connect to primary tracker. Failing over...");
     current_tracker_idx = (current_tracker_idx + 1) % tracker_addresses.size();
     
     if (try_connect_to(tracker_addresses[current_tracker_idx])) {
@@ -101,7 +126,7 @@ string Client::send_to_tracker(const string& command, bool is_retry) {
             return "ERROR: Failed to send command to the secondary tracker.";
         }
 
-        log_message("Connection lost. Attempting to reconnect and retry...");
+        log_msg("Connection lost. Attempting to reconnect and retry...");
         close(tracker_socket);
         tracker_socket = -1;
 
@@ -110,20 +135,20 @@ string Client::send_to_tracker(const string& command, bool is_retry) {
         }
 
         if (is_logged_in) {
-            log_message("Re-authenticating session with new tracker...");
+            log_msg("Re-authenticating session with new tracker...");
             string login_cmd = "login " + user_id + " " + password + " " + to_string(seeder_port);
             
             send(tracker_socket, login_cmd.c_str(), login_cmd.length(), 0);
             
-            char login_buffer[MSG_SIZE] = {0};
-            read(tracker_socket, login_buffer, MSG_SIZE);
+            char login_buffer[size_piece] = {0};
+            read(tracker_socket, login_buffer, size_piece);
             string login_response(login_buffer);
 
-            if(login_response.find("SUCCESS") == string::npos) {
-                log_message("Warning: Re-login failed. You may need to login manually.");
+            if(login_response.find("success") == string::npos) {
+                log_msg("Warning: Re-login failed. You may need to login manually.");
                 is_logged_in = false;
             } else {
-                 log_message("Re-authentication successful.");
+                 log_msg("Re-authentication successful.");
             }
         }
         
@@ -134,8 +159,8 @@ string Client::send_to_tracker(const string& command, bool is_retry) {
         return attempt_failover_and_retry();
     }
 
-    char buffer[MSG_SIZE] = {0};
-    ssize_t bytes_read = read(tracker_socket, buffer, MSG_SIZE);
+    char buffer[size_piece] = {0};
+    ssize_t bytes_read = read(tracker_socket, buffer, size_piece);
     
     if (bytes_read <= 0) {
         return attempt_failover_and_retry();
@@ -148,7 +173,7 @@ string Client::send_to_tracker(const string& command, bool is_retry) {
 void Client::process_user_input() {
     string line;
     while (cout << "> " && getline(cin, line)) {
-        auto args = split_string(line, " ");
+        auto args = parse(line, " ");
         if (args.empty()) continue;
 
         const string& command = args[0];
@@ -165,7 +190,7 @@ void Client::process_user_input() {
         } else {
             string response = send_to_tracker(line);
             cout << response << endl;
-            if (command == "logout" && response.find("SUCCESS") != string::npos) {
+            if (command == "logout" && response.find("success") != string::npos) {
                 is_logged_in = false;
                 user_id = "";
                 password = "";
@@ -183,7 +208,7 @@ void Client::handle_login(const vector<string>& args) {
     string response = send_to_tracker(command);
     cout << response << endl;
 
-    if (response.find("SUCCESS") != string::npos) {
+    if (response.find("success") != string::npos) {
         is_logged_in = true;
         user_id = args[1];
         password = args[2];
@@ -209,7 +234,7 @@ void Client::start_seeder_service() {
     }
     
     listen(seeder_socket, 10);
-    log_message("Seeder listening on port " + to_string(seeder_port));
+    log_msg("Seeder listening on port " + to_string(seeder_port));
     
     while (true) {
         int peer_sock = accept(seeder_socket, nullptr, nullptr);
@@ -224,7 +249,7 @@ void Client::handle_peer_connection(int peer_socket) {
     char buffer[1024] = {0};
     read(peer_socket, buffer, 1024);
     
-    auto args = split_string(string(buffer), " ");
+    auto args = parse(string(buffer), " ");
     if (args.size() == 3 && args[0] == "get_piece") {
         const string& filename = args[1];
         int piece_index = stoi(args[2]);
@@ -238,15 +263,17 @@ void Client::handle_peer_connection(int peer_socket) {
         }
 
         if (!file_path.empty()) {
-            ifstream file(file_path, ios::binary);
-            if (file.is_open()) {
-                file.seekg((long long)piece_index * PIECE_SIZE, ios::beg);
+            int fd = open(file_path.c_str(), O_RDONLY);
+            if (fd != -1) {
+                lseek(fd, (long long)piece_index * PIECE_SIZE, SEEK_SET);
+                
                 char piece_buffer[PIECE_SIZE];
-                file.read(piece_buffer, PIECE_SIZE);
-                streamsize bytes_read = file.gcount();
+                ssize_t bytes_read = read(fd, piece_buffer, PIECE_SIZE);
+                
                 if (bytes_read > 0) {
                     send(peer_socket, piece_buffer, bytes_read, 0);
                 }
+                close(fd);
             }
         }
     }
@@ -267,28 +294,32 @@ void Client::handle_upload(const vector<string>& args) {
     const string& file_path = args[2];
     string filename = file_path.substr(file_path.find_last_of("/\\") + 1);
 
-    ifstream file(file_path, ios::binary | ios::ate);
-    if (!file.is_open()) {
+    int fd = open(file_path.c_str(), O_RDONLY);
+    if (fd < 0) {
         cout << "ERROR: Cannot open file " << file_path << endl;
         return;
     }
     
-    long long file_size = file.tellg();
-    file.seekg(0, ios::beg);
-    
+    struct stat file_stat;
+    if (fstat(fd, &file_stat) < 0) {
+        cout << "ERROR: Cannot get file stats for " << file_path << endl;
+        close(fd);
+        return;
+    }
+    long long file_size = file_stat.st_size;
+
     vector<string> piece_hashes;
     char piece_buffer[PIECE_SIZE];
 
     SHA_CTX sha_context;
     SHA1_Init(&sha_context);
 
-    while(file.read(piece_buffer, PIECE_SIZE) || file.gcount() > 0) {
-        streamsize bytes_read = file.gcount();
-        if (bytes_read > 0) {
-            piece_hashes.push_back(calculate_sha1(piece_buffer, bytes_read));
-            SHA1_Update(&sha_context, piece_buffer, bytes_read);
-        }
+    ssize_t bytes_read;
+    while((bytes_read = read(fd, piece_buffer, PIECE_SIZE)) > 0) {
+        piece_hashes.push_back(sha(piece_buffer, bytes_read));
+        SHA1_Update(&sha_context, piece_buffer, bytes_read);
     }
+    close(fd);
 
     unsigned char full_hash_raw[SHA_DIGEST_LENGTH];
     SHA1_Final(full_hash_raw, &sha_context);
@@ -309,7 +340,7 @@ void Client::handle_upload(const vector<string>& args) {
     string response = send_to_tracker(command_stream.str());
     cout << response << endl;
 
-    if (response.find("SUCCESS") != string::npos) {
+    if (response.find("success") != string::npos) {
         lock_guard<mutex> lock(shared_files_mutex);
         shared_files[filename] = file_path;
     }
@@ -328,9 +359,9 @@ void Client::handle_download(const vector<string>& args) {
     string command = "download_file " + args[1] + " " + args[2];
     string response = send_to_tracker(command);
     
-    auto metadata = split_string(response, " ");
-    if (metadata[0] == "SUCCESS") {
-        log_message("Starting download for " + args[2]);
+    auto metadata = parse(response, " ");
+    if (metadata[0] == "success") {
+        log_msg("Starting download for " + args[2]);
         thread downloader(&Client::download_manager, this, args[1], args[2], args[3], metadata);
         downloader.detach();
     } else {
@@ -363,14 +394,13 @@ void Client::download_manager(const string& group_id, const string& filename, co
         ongoing_downloads[filename] = state;
     }
 
-    ofstream out_file(dest_path, ios::binary | ios::out);
-    if (!out_file.is_open()) {
-        log_message("Failed to create destination file: " + dest_path);
+    int fd = open(dest_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+        log_msg("Failed to create destination file: " + dest_path);
         lock_guard<mutex> lock(downloads_mutex);
         ongoing_downloads[filename].status = "Failed";
         return;
     }
-    out_file.close(); 
 
     int pieces_to_get = state.total_pieces;
     int seeder_idx = 0;
@@ -379,9 +409,10 @@ void Client::download_manager(const string& group_id, const string& filename, co
         bool piece_ok = false;
         while(!piece_ok) {
             if (seeders.empty()) {
-                 log_message("No more seeders. Download failed for " + filename);
+                 log_msg("No more seeders. Download failed for " + filename);
                  lock_guard<mutex> lock(downloads_mutex);
                  ongoing_downloads[filename].status = "Failed";
+                 close(fd);
                  return;
             }
             string seeder_addr = seeders[seeder_idx % seeders.size()];
@@ -398,22 +429,18 @@ void Client::download_manager(const string& group_id, const string& filename, co
             inet_pton(AF_INET, peer_ip.c_str(), &peer_server_addr.sin_addr);
 
             if (connect(peer_sock, (struct sockaddr*)&peer_server_addr, sizeof(peer_server_addr)) < 0) {
-                log_message("Failed to connect to seeder " + seeder_addr);
+                log_msg("Failed to connect to seeder " + seeder_addr);
                 close(peer_sock);
                 continue;
             }
 
-            log_message("Downloading piece " + to_string(i) + " from seeder " + seeder_addr);
+            log_msg("Downloading piece " + to_string(i) + " from seeder " + seeder_addr);
 
             string request = "get_piece " + filename + " " + to_string(i);
             send(peer_sock, request.c_str(), request.length(), 0);
             
-            // --- THIS IS THE FINAL BUG FIX ---
-            // We must loop on read() to get the entire piece from the stream.
-
             char piece_buf[PIECE_SIZE];
             long long piece_size_to_expect = PIECE_SIZE;
-            // The last piece might be smaller
             if (i == state.total_pieces - 1) {
                 piece_size_to_expect = state.file_size % PIECE_SIZE;
                 if (piece_size_to_expect == 0) {
@@ -425,23 +452,18 @@ void Client::download_manager(const string& group_id, const string& filename, co
             while (total_bytes_read < piece_size_to_expect) {
                 ssize_t bytes_read_now = read(peer_sock, piece_buf + total_bytes_read, piece_size_to_expect - total_bytes_read);
                 if (bytes_read_now <= 0) {
-                    // Seeder disconnected prematurely
-                    log_message("Seeder disconnected while reading piece " + to_string(i));
-                    total_bytes_read = -1; // Signal an error
+                    log_msg("Seeder disconnected while reading piece " + to_string(i));
+                    total_bytes_read = -1;
                     break;
                 }
                 total_bytes_read += bytes_read_now;
             }
 
-            // --- END OF BUG FIX ---
-
             if (total_bytes_read > 0) {
-                string received_hash = calculate_sha1(piece_buf, total_bytes_read);
+                string received_hash = sha(piece_buf, total_bytes_read);
                 if (received_hash == state.piece_hashes[i]) {
-                    fstream file(dest_path, ios::binary | ios::in | ios::out);
-                    file.seekp((long long)i * PIECE_SIZE, ios::beg);
-                    file.write(piece_buf, total_bytes_read);
-                    file.close();
+                    lseek(fd, (long long)i * PIECE_SIZE, SEEK_SET);
+                    write(fd, piece_buf, total_bytes_read);
                     
                     piece_ok = true;
                     pieces_to_get--;
@@ -449,15 +471,17 @@ void Client::download_manager(const string& group_id, const string& filename, co
                     lock_guard<mutex> lock(downloads_mutex);
                     ongoing_downloads[filename].pieces_downloaded[i] = true;
                 } else {
-                    log_message("Hash mismatch for piece " + to_string(i) + ". Retrying.");
+                    log_msg("Hash mismatch for piece " + to_string(i) + ". Retrying.");
                 }
             }
             close(peer_sock);
         }
     }
 
+    close(fd);
+
     if (pieces_to_get == 0) {
-        log_message("Download completed for " + filename);
+        log_msg("Download completed for " + filename);
         lock_guard<mutex> lock(downloads_mutex);
         ongoing_downloads[filename].status = "Completed";
         

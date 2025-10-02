@@ -6,7 +6,7 @@
 
 using namespace std;
 
-string calculate_sha1(const char* data, size_t len) {
+string sha(const char* data, size_t len) {
     unsigned char hash[SHA_DIGEST_LENGTH];
     SHA1(reinterpret_cast<const unsigned char*>(data), len, hash);
     
@@ -18,7 +18,7 @@ string calculate_sha1(const char* data, size_t len) {
     return ss.str();
 }
 
-vector<string> split_string(const string& str, const string& delimiter) {
+vector<string> parse(const string& str, const string& delimiter) {
     vector<string> tokens;
     size_t start = 0, end = 0;
     while ((end = str.find(delimiter, start)) != string::npos) {
@@ -29,6 +29,6 @@ vector<string> split_string(const string& str, const string& delimiter) {
     return tokens;
 }
 
-void log_message(const string& msg) {
-    cout << "[LOG] " << msg << endl;
+void log_msg(const string& msg) {
+    cout << "[log] " << msg << endl;
 }
