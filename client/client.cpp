@@ -12,8 +12,9 @@
 #include <openssl/sha.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#define MSG_SIZE 512*1024
 
-#define size_piece 512*1024
+using namespace std;
 
 Client::Client(const string& tracker_info_file) 
 {
@@ -140,9 +141,12 @@ string Client::send_to_tracker(const string& command, bool is_retry) {
             
             send(tracker_socket, login_cmd.c_str(), login_cmd.length(), 0);
             
-            char login_buffer[size_piece] = {0};
-            read(tracker_socket, login_buffer, size_piece);
+            // --- FIX: Allocate buffer on HEAP ---
+            char* login_buffer = new char[MSG_SIZE];
+            memset(login_buffer, 0, MSG_SIZE);
+            read(tracker_socket, login_buffer, MSG_SIZE);
             string login_response(login_buffer);
+            delete[] login_buffer; // Clean up memory
 
             if(login_response.find("success") == string::npos) {
                 log_msg("Warning: Re-login failed. You may need to login manually.");
@@ -159,14 +163,19 @@ string Client::send_to_tracker(const string& command, bool is_retry) {
         return attempt_failover_and_retry();
     }
 
-    char buffer[size_piece] = {0};
-    ssize_t bytes_read = read(tracker_socket, buffer, size_piece);
+    // --- FIX: Allocate buffer on HEAP ---
+    char* buffer = new char[MSG_SIZE];
+    memset(buffer, 0, MSG_SIZE);
+    ssize_t bytes_read = read(tracker_socket, buffer, MSG_SIZE);
     
     if (bytes_read <= 0) {
+        delete[] buffer; // Clean up memory on error
         return attempt_failover_and_retry();
     }
 
-    return string(buffer);
+    string response(buffer);
+    delete[] buffer; // Clean up memory
+    return response;
 }
 
 
@@ -267,12 +276,14 @@ void Client::handle_peer_connection(int peer_socket) {
             if (fd != -1) {
                 lseek(fd, (long long)piece_index * PIECE_SIZE, SEEK_SET);
                 
-                char piece_buffer[PIECE_SIZE];
+                // --- FIX: Allocate buffer on HEAP ---
+                char* piece_buffer = new char[PIECE_SIZE];
                 ssize_t bytes_read = read(fd, piece_buffer, PIECE_SIZE);
                 
                 if (bytes_read > 0) {
                     send(peer_socket, piece_buffer, bytes_read, 0);
                 }
+                delete[] piece_buffer; // Clean up memory
                 close(fd);
             }
         }
@@ -309,7 +320,8 @@ void Client::handle_upload(const vector<string>& args) {
     long long file_size = file_stat.st_size;
 
     vector<string> piece_hashes;
-    char piece_buffer[PIECE_SIZE];
+    // --- FIX: Allocate buffer on HEAP ---
+    char* piece_buffer = new char[PIECE_SIZE];
 
     SHA_CTX sha_context;
     SHA1_Init(&sha_context);
@@ -320,6 +332,7 @@ void Client::handle_upload(const vector<string>& args) {
         SHA1_Update(&sha_context, piece_buffer, bytes_read);
     }
     close(fd);
+    delete[] piece_buffer; // Clean up memory
 
     unsigned char full_hash_raw[SHA_DIGEST_LENGTH];
     SHA1_Final(full_hash_raw, &sha_context);
@@ -380,14 +393,23 @@ void Client::download_manager(const string& group_id, const string& filename, co
     state.pieces_downloaded.resize(state.total_pieces, false);
     
     size_t seeder_start_index = 3 + state.total_pieces;
-    for (int i = 0; i < state.total_pieces; ++i) {
-        state.piece_hashes[i] = metadata[3 + i];
+    for (size_t i = 0; i < state.total_pieces; ++i) {
+        // Corrected the index to properly parse metadata
+        if ((3 + i) < metadata.size()) {
+            state.piece_hashes[i] = metadata[3 + i];
+        } else {
+             log_msg("Error: Missing piece hash metadata for piece " + to_string(i));
+             return;
+        }
     }
     
     vector<string> seeders;
-    for (size_t i = seeder_start_index; i < metadata.size(); ++i) {
-        seeders.push_back(metadata[i]);
+    if (seeder_start_index < metadata.size()) {
+        for (size_t i = seeder_start_index; i < metadata.size(); ++i) {
+            seeders.push_back(metadata[i]);
+        }
     }
+
 
     {
         lock_guard<mutex> lock(downloads_mutex);
@@ -402,6 +424,9 @@ void Client::download_manager(const string& group_id, const string& filename, co
         return;
     }
 
+    // --- CRITICAL FIX: Allocate buffer on the HEAP ---
+    char* piece_buf = new char[PIECE_SIZE];
+
     int pieces_to_get = state.total_pieces;
     int seeder_idx = 0;
     
@@ -413,6 +438,7 @@ void Client::download_manager(const string& group_id, const string& filename, co
                  lock_guard<mutex> lock(downloads_mutex);
                  ongoing_downloads[filename].status = "Failed";
                  close(fd);
+                 delete[] piece_buf; // Clean up memory on error
                  return;
             }
             string seeder_addr = seeders[seeder_idx % seeders.size()];
@@ -439,7 +465,6 @@ void Client::download_manager(const string& group_id, const string& filename, co
             string request = "get_piece " + filename + " " + to_string(i);
             send(peer_sock, request.c_str(), request.length(), 0);
             
-            char piece_buf[PIECE_SIZE];
             long long piece_size_to_expect = PIECE_SIZE;
             if (i == state.total_pieces - 1) {
                 piece_size_to_expect = state.file_size % PIECE_SIZE;
@@ -479,6 +504,7 @@ void Client::download_manager(const string& group_id, const string& filename, co
     }
 
     close(fd);
+    delete[] piece_buf; // Clean up memory on success
 
     if (pieces_to_get == 0) {
         log_msg("Download completed for " + filename);
