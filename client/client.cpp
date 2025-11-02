@@ -163,7 +163,6 @@ string Client::send_to_tracker(const string& command, bool is_retry) {
         return attempt_failover_and_retry();
     }
 
-    // --- FIX: Allocate buffer on HEAP ---
     char* buffer = new char[MSG_SIZE];
     memset(buffer, 0, MSG_SIZE);
     ssize_t bytes_read = read(tracker_socket, buffer, MSG_SIZE);
@@ -320,7 +319,6 @@ void Client::handle_upload(const vector<string>& args) {
     long long file_size = file_stat.st_size;
 
     vector<string> piece_hashes;
-    // --- FIX: Allocate buffer on HEAP ---
     char* piece_buffer = new char[PIECE_SIZE];
 
     SHA_CTX sha_context;
@@ -378,7 +376,7 @@ void Client::handle_download(const vector<string>& args) {
         thread downloader(&Client::download_manager, this, args[1], args[2], args[3], metadata);
         downloader.detach();
     } else {
-        cout << response << endl;
+        // cout << response << endl;
     }
 }
 
@@ -394,7 +392,6 @@ void Client::download_manager(const string& group_id, const string& filename, co
     
     size_t seeder_start_index = 3 + state.total_pieces;
     for (size_t i = 0; i < state.total_pieces; ++i) {
-        // Corrected the index to properly parse metadata
         if ((3 + i) < metadata.size()) {
             state.piece_hashes[i] = metadata[3 + i];
         } else {
@@ -424,7 +421,6 @@ void Client::download_manager(const string& group_id, const string& filename, co
         return;
     }
 
-    // --- CRITICAL FIX: Allocate buffer on the HEAP ---
     char* piece_buf = new char[PIECE_SIZE];
 
     int pieces_to_get = state.total_pieces;
